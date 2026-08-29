@@ -35,13 +35,15 @@ STRIKEGAMES_JSON_URL = (
     "https://strikegames.shop/collections/tcg-pokemon-produit-en-francais/products.json"
     "?limit=250"
 )
+INVESTCOLLECT_BASE_URL = "https://investcollect.com/eshop/produits-scelles.html"
+INVESTCOLLECT_MAX_PAGES = 10  # garde-fou pour ne jamais boucler a l'infini
 
 
 def load_state():
     if STATE_FILE.exists():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"philibert": {}, "strikegames": {}}
+    return {"philibert": {}, "strikegames": {}, "investcollect": {}}
 
 
 def save_state(state):
@@ -116,6 +118,51 @@ def fetch_strikegames():
     return products
 
 
+def fetch_investcollect():
+    """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour InvestCollect.
+
+    Le catalogue est paginé (?p=1, ?p=2, ...). On parcourt les pages jusqu'à
+    ce qu'une page ne ramène plus de nouveau produit (ou jusqu'au garde-fou
+    INVESTCOLLECT_MAX_PAGES).
+    """
+    products = {}
+    # Les liens produits suivent le format: /eshop/p/<slug>.html
+    pattern = re.compile(r"/eshop/p/([a-z0-9\-_.]+)\.html")
+
+    for page in range(1, INVESTCOLLECT_MAX_PAGES + 1):
+        resp = requests.get(
+            INVESTCOLLECT_BASE_URL, params={"p": page}, headers=HEADERS, timeout=30
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        found_on_this_page = 0
+        for a in soup.find_all("a", href=True):
+            m = pattern.search(a["href"])
+            if not m:
+                continue
+            slug = m.group(1)
+            title = a.get_text(strip=True)
+            url = a["href"].split("?")[0]
+            if not url.startswith("http"):
+                url = "https://investcollect.com" + url
+
+            if slug not in products:
+                found_on_this_page += 1
+                products[slug] = {
+                    "title": title if title else "(titre indisponible)",
+                    "url": url,
+                }
+            elif title and products[slug]["title"] == "(titre indisponible)":
+                products[slug]["title"] = title
+
+        if found_on_this_page == 0:
+            # Page vide ou déjà entièrement vue : on a atteint la fin du catalogue
+            break
+
+    return products
+
+
 def diff_and_notify(site_label, previous, current):
     """Compare les dicts previous/current, notifie les nouveaux, retourne current."""
     new_ids = [pid for pid in current if pid not in previous]
@@ -158,6 +205,12 @@ def main():
         print(f"Erreur recuperation Strike Games: {e}", file=sys.stderr)
         strikegames_current = None
 
+    try:
+        investcollect_current = fetch_investcollect()
+    except Exception as e:
+        print(f"Erreur recuperation InvestCollect: {e}", file=sys.stderr)
+        investcollect_current = None
+
     if philibert_current is not None:
         state["philibert"] = diff_and_notify(
             "Philibert", state.get("philibert", {}), philibert_current
@@ -166,6 +219,11 @@ def main():
     if strikegames_current is not None:
         state["strikegames"] = diff_and_notify(
             "Strike Games", state.get("strikegames", {}), strikegames_current
+        )
+
+    if investcollect_current is not None:
+        state["investcollect"] = diff_and_notify(
+            "InvestCollect", state.get("investcollect", {}), investcollect_current
         )
 
     save_state(state)
