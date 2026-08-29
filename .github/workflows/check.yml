@@ -1,1 +1,27 @@
-
+name: Surveillance Pokemon
+on: {"schedule": [{"cron": "*/20 * * * *"}], "workflow_dispatch": {}}
+permissions:
+  contents: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances
+        run: pip install -r requirements.txt
+      - name: Lancer la verification
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python check_pokemon.py
+      - name: Sauvegarder l'etat mis a jour
+        run: |
+          git config user.name "pokemon-watcher-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add seen_products.json
+          git diff --quiet --cached || git commit -m "Mise a jour de la liste des produits vus"
+          git push
