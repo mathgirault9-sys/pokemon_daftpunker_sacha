@@ -37,13 +37,22 @@ STRIKEGAMES_JSON_URL = (
 )
 INVESTCOLLECT_BASE_URL = "https://investcollect.com/eshop/produits-scelles.html"
 INVESTCOLLECT_MAX_PAGES = 10  # garde-fou pour ne jamais boucler a l'infini
+MAISONDELAPRESSE_BASE_URL = (
+    "https://www.maisondelapresse.com/jeux-jouets/cartes-collectionner/cartes-pokemon.html"
+)
+MAISONDELAPRESSE_MAX_PAGES = 15  # garde-fou pour ne jamais boucler a l'infini
 
 
 def load_state():
     if STATE_FILE.exists():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"philibert": {}, "strikegames": {}, "investcollect": {}}
+    return {
+        "philibert": {},
+        "strikegames": {},
+        "investcollect": {},
+        "maisondelapresse": {},
+    }
 
 
 def save_state(state):
@@ -163,6 +172,47 @@ def fetch_investcollect():
     return products
 
 
+def fetch_maisondelapresse():
+    """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour Maison de la Presse.
+
+    Site Magento : les produits d'une page de categorie utilisent la classe
+    standard "product-item-link" pour leurs liens (plus fiable ici qu'un
+    pattern d'URL, car les pages produits n'ont pas de prefixe commun).
+    Pagination classique via ?p=2, ?p=3, etc.
+    """
+    products = {}
+
+    for page in range(1, MAISONDELAPRESSE_MAX_PAGES + 1):
+        resp = requests.get(
+            MAISONDELAPRESSE_BASE_URL, params={"p": page}, headers=HEADERS, timeout=30
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Selecteur principal (structure Magento standard)
+        links = soup.select("a.product-item-link")
+
+        found_on_this_page = 0
+        for a in links:
+            url = a.get("href", "").split("?")[0]
+            if not url:
+                continue
+            title = a.get_text(strip=True)
+            # Utilise l'URL elle-meme comme identifiant unique du produit
+            if url not in products:
+                found_on_this_page += 1
+                products[url] = {
+                    "title": title if title else "(titre indisponible)",
+                    "url": url,
+                }
+
+        if found_on_this_page == 0:
+            # Page vide ou deja entierement vue : fin du catalogue
+            break
+
+    return products
+
+
 def diff_and_notify(site_label, previous, current):
     """Compare les dicts previous/current, notifie les nouveaux, retourne current."""
     new_ids = [pid for pid in current if pid not in previous]
@@ -211,6 +261,12 @@ def main():
         print(f"Erreur recuperation InvestCollect: {e}", file=sys.stderr)
         investcollect_current = None
 
+    try:
+        maisondelapresse_current = fetch_maisondelapresse()
+    except Exception as e:
+        print(f"Erreur recuperation Maison de la Presse: {e}", file=sys.stderr)
+        maisondelapresse_current = None
+
     if philibert_current is not None:
         state["philibert"] = diff_and_notify(
             "Philibert", state.get("philibert", {}), philibert_current
@@ -224,6 +280,13 @@ def main():
     if investcollect_current is not None:
         state["investcollect"] = diff_and_notify(
             "InvestCollect", state.get("investcollect", {}), investcollect_current
+        )
+
+    if maisondelapresse_current is not None:
+        state["maisondelapresse"] = diff_and_notify(
+            "Maison de la Presse",
+            state.get("maisondelapresse", {}),
+            maisondelapresse_current,
         )
 
     save_state(state)
