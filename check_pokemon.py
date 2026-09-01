@@ -266,11 +266,17 @@ def main():
         print(f"Erreur recuperation InvestCollect: {e}", file=sys.stderr)
         investcollect_current = None
 
-    try:
-        maisondelapresse_current = fetch_maisondelapresse()
-    except Exception as e:
-        print(f"Erreur recuperation Maison de la Presse: {e}", file=sys.stderr)
-        maisondelapresse_current = None
+    # DESACTIVE TEMPORAIREMENT : Maison de la Presse genere des notifications
+    # en boucle sur les memes produits (probable widget de recommandation
+    # capture par erreur). On coupe la detection le temps de diagnostiquer
+    # avec le vrai code source de la page. Pour reactiver : decommenter les
+    # 4 lignes ci-dessous.
+    maisondelapresse_current = None
+    # try:
+    #     maisondelapresse_current = fetch_maisondelapresse()
+    # except Exception as e:
+    #     print(f"Erreur recuperation Maison de la Presse: {e}", file=sys.stderr)
+    #     maisondelapresse_current = None
 
     if philibert_current is not None:
         state["philibert"] = diff_and_notify(
