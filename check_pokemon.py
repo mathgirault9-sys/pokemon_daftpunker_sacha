@@ -175,9 +175,12 @@ def fetch_investcollect():
 def fetch_maisondelapresse():
     """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour Maison de la Presse.
 
-    Site Magento : les produits d'une page de categorie utilisent la classe
-    standard "product-item-link" pour leurs liens (plus fiable ici qu'un
-    pattern d'URL, car les pages produits n'ont pas de prefixe commun).
+    Site Magento : on cible specifiquement la grille de produits de la
+    categorie (<ol class="products list items product-items">), pas toute
+    la page. Cela evite de capturer des widgets de recommandation
+    ("vous aimerez aussi", "recemment consultes") qui utilisent la meme
+    classe de lien mais changent de contenu a chaque requete sans lien
+    avec le vrai catalogue.
     Pagination classique via ?p=2, ?p=3, etc.
     """
     products = {}
@@ -189,10 +192,17 @@ def fetch_maisondelapresse():
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Selecteur principal (structure Magento standard)
-        links = soup.select("a.product-item-link")
+        # Cible uniquement la grille de produits de la categorie (structure
+        # Magento standard). Fallback sur le selecteur large si la grille
+        # n'est pas trouvee, pour ne jamais tomber a zero silencieusement.
+        links = soup.select("ol.products.list.items.product-items a.product-item-link")
+        if not links:
+            links = soup.select("a.product-item-link")
 
-        found_on_this_page = 0
+        if not links:
+            # Page veritablement vide : fin du catalogue
+            break
+
         for a in links:
             url = a.get("href", "").split("?")[0]
             if not url:
@@ -200,15 +210,10 @@ def fetch_maisondelapresse():
             title = a.get_text(strip=True)
             # Utilise l'URL elle-meme comme identifiant unique du produit
             if url not in products:
-                found_on_this_page += 1
                 products[url] = {
                     "title": title if title else "(titre indisponible)",
                     "url": url,
                 }
-
-        if found_on_this_page == 0:
-            # Page vide ou deja entierement vue : fin du catalogue
-            break
 
     return products
 
