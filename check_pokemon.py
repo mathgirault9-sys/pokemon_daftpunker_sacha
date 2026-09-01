@@ -219,7 +219,15 @@ def fetch_maisondelapresse():
 
 
 def diff_and_notify(site_label, previous, current):
-    """Compare les dicts previous/current, notifie les nouveaux, retourne current."""
+    """Compare les dicts previous/current, notifie les nouveaux, retourne l'etat fusionne.
+
+    IMPORTANT : on fusionne previous et current (au lieu de remplacer par
+    current) pour ne jamais "oublier" un produit qui aurait disparu
+    temporairement d'un passage a l'autre (variation d'affichage cote site,
+    decalage de stock, etc.). Sans cette fusion, un produit qui reapparait
+    apres une absence momentanee serait injustement considere comme
+    "nouveau" et redeclencherait une notification.
+    """
     new_ids = [pid for pid in current if pid not in previous]
 
     if not previous:
@@ -242,7 +250,12 @@ def diff_and_notify(site_label, previous, current):
         )
         time.sleep(1)  # petite pause pour ne pas spammer ntfy d'un coup
 
-    return current
+    # Fusion : on garde tout ce qui etait deja connu, et on ajoute/rafraichit
+    # avec les infos les plus recentes pour les produits toujours presents.
+    merged = dict(previous)
+    merged.update(current)
+    return merged
+
 
 
 def main():
@@ -266,17 +279,11 @@ def main():
         print(f"Erreur recuperation InvestCollect: {e}", file=sys.stderr)
         investcollect_current = None
 
-    # DESACTIVE TEMPORAIREMENT : Maison de la Presse genere des notifications
-    # en boucle sur les memes produits (probable widget de recommandation
-    # capture par erreur). On coupe la detection le temps de diagnostiquer
-    # avec le vrai code source de la page. Pour reactiver : decommenter les
-    # 4 lignes ci-dessous.
-    maisondelapresse_current = None
-    # try:
-    #     maisondelapresse_current = fetch_maisondelapresse()
-    # except Exception as e:
-    #     print(f"Erreur recuperation Maison de la Presse: {e}", file=sys.stderr)
-    #     maisondelapresse_current = None
+    try:
+        maisondelapresse_current = fetch_maisondelapresse()
+    except Exception as e:
+        print(f"Erreur recuperation Maison de la Presse: {e}", file=sys.stderr)
+        maisondelapresse_current = None
 
     if philibert_current is not None:
         state["philibert"] = diff_and_notify(
