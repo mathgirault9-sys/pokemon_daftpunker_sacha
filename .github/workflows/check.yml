@@ -1,5 +1,10 @@
 name: Surveillance Pokemon
 on: {"schedule": [{"cron": "*/20 * * * *"}], "workflow_dispatch": {}}
+
+concurrency:
+  group: pokemon-watcher-run
+  cancel-in-progress: false
+
 permissions:
   contents: write
 jobs:
@@ -22,6 +27,7 @@ jobs:
         run: |
           git config user.name "pokemon-watcher-bot"
           git config user.email "actions@users.noreply.github.com"
+          git pull --rebase origin main
           git add seen_products.json
           git diff --quiet --cached || git commit -m "Mise a jour de la liste des produits vus"
           git push
