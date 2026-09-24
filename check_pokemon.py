@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Surveillance de nouveaux produits Pokemon sur une liste de sites marchands.
@@ -113,52 +112,6 @@ def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MA
     return products
 
 
-def fetch_url_pattern(page_url, id_pattern, base_url, params_key=None, max_pages=1):
-    """Generique : extrait les liens produits correspondant a un pattern
-    d'URL donne (regex avec un groupe = identifiant). Utilise pour les sites
-    dont on a confirme le pattern manuellement mais qui ne suivent ni
-    Shopify ni PrestaShop pile-poil (ex: play-in.com, lecoindesbarons.com).
-    Si params_key est fourni, pagine via ce parametre de requete (?param=N).
-    """
-    products = {}
-    pattern = re.compile(id_pattern)
-
-    for page in range(1, max_pages + 1):
-        params = {params_key: page} if params_key else None
-        resp = requests.get(page_url, params=params, headers=HEADERS, timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        found_on_this_page = 0
-        for a in soup.find_all("a", href=True):
-            m = pattern.search(a["href"])
-            if not m:
-                continue
-            product_id = m.group(1)
-            title = a.get_text(strip=True)
-            url = a["href"].split("?")[0]
-            if not url.startswith("http"):
-                url = base_url + url
-
-            if product_id not in products:
-                found_on_this_page += 1
-                products[product_id] = {
-                    "title": title if title else "(titre indisponible)",
-                    "url": url,
-                }
-            elif title and products[product_id]["title"] == "(titre indisponible)":
-                products[product_id]["title"] = title
-
-        if params_key and found_on_this_page == 0:
-            break
-
-    return products
-
-
-# ---------------------------------------------------------------------------
-# Recuperateurs specifiques (logique propre a un site precis, deja testee)
-# ---------------------------------------------------------------------------
-
 def fetch_philibert():
     return fetch_prestashop_id_pattern(
         category_url="https://www.philibertnet.com/fr/212-pokemon/s-3/langues-francais",
@@ -179,66 +132,50 @@ def fetch_investcollect():
     )
 
 
-def fetch_maisondelapresse():
-    """Cas particulier : on cible specifiquement la grille de produits de la
-    categorie (<ol class="products list items product-items">), pas toute la
-    page, pour eviter de capturer des widgets de recommandation qui changent
-    de contenu a chaque requete sans lien avec le vrai catalogue.
+def fetch_destocktcg():
+    """DestockTCG bloque l'outil de previsualisation utilise en amont pour
+    verifier le HTML (403/404 systematique sur les pages de categorie,
+    probable protection anti-scraping), donc ce site n'a pas pu etre
+    verifie directement. On s'appuie sur le pattern d'URL des pages
+    produits (/product/<slug>), confirme via des pages accessibles
+    (accueil, resultats de recherche). A tester en conditions reelles."""
+    url = "https://www.destocktcg.fr/jeux-de-cartes-a-collectionner/pokemon/"
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-    Le site a migre vers un nouveau theme (Hyva) qui semble accompagne d'une
-    protection anti-bot plus stricte : on utilise une session avec visite
-    prealable de la page d'accueil (cookies) et un Referer, comme pour
-    Ludocortex. Pas de garantie de contournement si la protection repose sur
-    l'empreinte TLS plutot que sur les cookies/en-tetes.
-    """
-    base_url = "https://www.maisondelapresse.com/jeux-jouets/cartes-collectionner/cartes-pokemon.html"
     products = {}
+    pattern = re.compile(r"/product/([a-z0-9\-]+)")
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    session.get("https://www.maisondelapresse.com/", timeout=30)
-    request_headers = {"Referer": "https://www.maisondelapresse.com/"}
+    for a in soup.find_all("a", href=True):
+        m = pattern.search(a["href"])
+        if not m:
+            continue
+        slug = m.group(1)
+        title = a.get_text(strip=True)
+        link = a["href"].split("?")[0]
+        if not link.startswith("http"):
+            link = "https://www.destocktcg.fr" + link
 
-    for page in range(1, MAX_PAGES_DEFAULT + 1):
-        resp = session.get(base_url, params={"p": page}, headers=request_headers, timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        links = soup.select("ol.products.list.items.product-items a.product-item-link")
-        if not links:
-            links = soup.select("a.product-item-link")
-        if not links:
-            break
-
-        for a in links:
-            url = a.get("href", "").split("?")[0]
-            if not url:
-                continue
-            title = a.get_text(strip=True)
-            if url not in products:
-                products[url] = {
-                    "title": title if title else "(titre indisponible)",
-                    "url": url,
-                }
+        if slug not in products:
+            products[slug] = {
+                "title": title if title else "(titre indisponible)",
+                "url": link,
+            }
+        elif title and products[slug]["title"] == "(titre indisponible)":
+            products[slug]["title"] = title
 
     return products
 
 
-def fetch_playin():
-    return fetch_url_pattern(
-        page_url="https://www.play-in.com/fr/gamme/3/pokemon/catalogue",
-        id_pattern=r"/fr/produit/(\d+)/[a-z0-9\-]+",
-        base_url="https://www.play-in.com",
-    )
-
-
-def fetch_lecoindesbarons():
-    return fetch_url_pattern(
-        page_url="https://lecoindesbarons.com/les-tcg/cartes-pokemon/",
-        id_pattern=r"(/tradingcard-game/cartes-pokemon/[a-z0-9\-/]+/)",
-        base_url="https://lecoindesbarons.com",
-        params_key="paged",
-        max_pages=5,
+def fetch_lagranderecre():
+    """Page categorie dediee Pokemon (sans les parametres de filtre a
+    facettes, bloques par le robots.txt du site). Produits identifies par
+    leur slug d'URL complet (pas d'ID numerique visible sur ce site)."""
+    return fetch_prestashop_id_pattern(
+        category_url="https://www.lagranderecre.fr/cartes-a-collectionner-pokemon.html",
+        id_pattern=r"/(jeux-de-societe/cartes-a-collectionner/[a-z0-9\-]+\.html)",
+        base_url="https://www.lagranderecre.fr",
     )
 
 
@@ -251,28 +188,8 @@ SITES = [
     ("philibert", "Philibert", fetch_philibert),
     ("strikegames", "Strike Games", fetch_strikegames),
     ("investcollect", "InvestCollect", fetch_investcollect),
-    ("maisondelapresse", "Maison de la Presse", fetch_maisondelapresse),
-    ("tradingcardsxxx", "Tradingcardsxxx", lambda: fetch_shopify("https://tradingcardsxxx.fr", "pokemon")),
-    ("relictcg", "RelicTCG", lambda: fetch_shopify("https://www.relictcg.com", "pokemon")),
-    ("kingdultes", "Kingdultes", lambda: fetch_shopify("https://www.kingdultes.com", "tcg-pokemon")),
-    ("ludiworld", "Ludiworld", lambda: fetch_prestashop_id_pattern(
-        category_url="https://www.ludiworld.com/148-pokemon",
-        id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
-        base_url="https://www.ludiworld.com",
-    )),
-    ("ludocortex", "Ludocortex", lambda: fetch_prestashop_id_pattern(
-        category_url="https://www.ludocortex.fr/58-pokemon-tcg",
-        id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
-        base_url="https://www.ludocortex.fr",
-        warmup_url="https://www.ludocortex.fr/",
-    )),
-    ("bcdjeux", "BCD Jeux", lambda: fetch_prestashop_id_pattern(
-        category_url="https://www.bcd-jeux.fr/511809-pokemon-tcg",
-        id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
-        base_url="https://www.bcd-jeux.fr",
-    )),
-    ("playin", "Playin", fetch_playin),
-    ("lecoindesbarons", "Le Coin des Barons", fetch_lecoindesbarons),
+    ("destocktcg", "DestockTCG", fetch_destocktcg),
+    ("lagranderecre", "La Grande Récré", fetch_lagranderecre),
 ]
 
 
