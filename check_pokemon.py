@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Surveillance de nouveaux produits Pokemon sur Philibert et Strike Games.
+Surveillance de nouveaux produits Pokemon sur une liste de sites marchands.
 
-- Recupere la liste des produits actuellement en ligne sur les deux sites
+- Recupere la liste des produits actuellement en ligne sur chaque site
 - Compare avec la liste sauvegardee lors du dernier passage (seen_products.json)
 - Envoie une notification push (via ntfy.sh) pour chaque nouveau produit detecte
-- Sauvegarde la nouvelle liste pour la prochaine execution
+- Sauvegarde la nouvelle liste (fusionnee avec l'ancienne) pour la prochaine execution
 
 Configuration : variable d'environnement NTFY_TOPIC (voir README.md)
 """
@@ -30,29 +30,235 @@ HEADERS = {
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }
 
-PHILIBERT_URL = "https://www.philibertnet.com/fr/212-pokemon/s-3/langues-francais"
-STRIKEGAMES_JSON_URL = (
-    "https://strikegames.shop/collections/tcg-pokemon-produit-en-francais/products.json"
-    "?limit=250"
-)
-INVESTCOLLECT_BASE_URL = "https://investcollect.com/eshop/produits-scelles.html"
-INVESTCOLLECT_MAX_PAGES = 10  # garde-fou pour ne jamais boucler a l'infini
-MAISONDELAPRESSE_BASE_URL = (
-    "https://www.maisondelapresse.com/jeux-jouets/cartes-collectionner/cartes-pokemon.html"
-)
-MAISONDELAPRESSE_MAX_PAGES = 15  # garde-fou pour ne jamais boucler a l'infini
+MAX_PAGES_DEFAULT = 15  # garde-fou pour ne jamais boucler a l'infini sur un site pagine
+
+
+# ---------------------------------------------------------------------------
+# Recuperateurs generiques (reutilisables pour plusieurs sites du meme type
+# de plateforme e-commerce)
+# ---------------------------------------------------------------------------
+
+def fetch_shopify(base_url, collection_handle):
+    """Sites Shopify : on utilise l'API JSON native /products.json, beaucoup
+    plus fiable qu'un scraping HTML (pas de classe CSS a deviner)."""
+    url = f"{base_url}/collections/{collection_handle}/products.json?limit=250"
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    products = {}
+    for p in data.get("products", []):
+        product_id = str(p["id"])
+        title = p.get("title", "(titre indisponible)")
+        handle = p.get("handle", "")
+        products[product_id] = {
+            "title": title,
+            "url": f"{base_url}/products/{handle}",
+        }
+    return products
+
+
+def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MAX_PAGES_DEFAULT):
+    """Sites PrestaShop : les liens produits contiennent un identifiant
+    numerique stable dans l'URL (ex: /fr/pokemon/12345-nom-du-produit.html).
+    Pagination classique via ?page=N."""
+    products = {}
+    pattern = re.compile(id_pattern)
+
+    for page in range(1, max_pages + 1):
+        resp = requests.get(category_url, params={"page": page}, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        found_on_this_page = 0
+        for a in soup.find_all("a", href=True):
+            m = pattern.search(a["href"])
+            if not m:
+                continue
+            product_id = m.group(1)
+            title = a.get_text(strip=True)
+            url = a["href"].split("?")[0]
+            if not url.startswith("http"):
+                url = base_url + url
+
+            if product_id not in products:
+                found_on_this_page += 1
+                products[product_id] = {
+                    "title": title if title else "(titre indisponible)",
+                    "url": url,
+                }
+            elif title and products[product_id]["title"] == "(titre indisponible)":
+                products[product_id]["title"] = title
+
+        if found_on_this_page == 0:
+            break
+
+    return products
+
+
+def fetch_url_pattern(page_url, id_pattern, base_url, params_key=None, max_pages=1):
+    """Generique : extrait les liens produits correspondant a un pattern
+    d'URL donne (regex avec un groupe = identifiant). Utilise pour les sites
+    dont on a confirme le pattern manuellement mais qui ne suivent ni
+    Shopify ni PrestaShop pile-poil (ex: play-in.com, lecoindesbarons.com).
+    Si params_key est fourni, pagine via ce parametre de requete (?param=N).
+    """
+    products = {}
+    pattern = re.compile(id_pattern)
+
+    for page in range(1, max_pages + 1):
+        params = {params_key: page} if params_key else None
+        resp = requests.get(page_url, params=params, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        found_on_this_page = 0
+        for a in soup.find_all("a", href=True):
+            m = pattern.search(a["href"])
+            if not m:
+                continue
+            product_id = m.group(1)
+            title = a.get_text(strip=True)
+            url = a["href"].split("?")[0]
+            if not url.startswith("http"):
+                url = base_url + url
+
+            if product_id not in products:
+                found_on_this_page += 1
+                products[product_id] = {
+                    "title": title if title else "(titre indisponible)",
+                    "url": url,
+                }
+            elif title and products[product_id]["title"] == "(titre indisponible)":
+                products[product_id]["title"] = title
+
+        if params_key and found_on_this_page == 0:
+            break
+
+    return products
+
+
+# ---------------------------------------------------------------------------
+# Recuperateurs specifiques (logique propre a un site precis, deja testee)
+# ---------------------------------------------------------------------------
+
+def fetch_philibert():
+    return fetch_prestashop_id_pattern(
+        category_url="https://www.philibertnet.com/fr/212-pokemon/s-3/langues-francais",
+        id_pattern=r"/fr/pokemon/(\d+)-[a-z0-9-]+\.html",
+        base_url="https://www.philibertnet.com",
+    )
+
+
+def fetch_strikegames():
+    return fetch_shopify("https://strikegames.shop", "tcg-pokemon-produit-en-francais")
+
+
+def fetch_investcollect():
+    return fetch_prestashop_id_pattern(
+        category_url="https://investcollect.com/eshop/produits-scelles.html",
+        id_pattern=r"/eshop/p/([a-z0-9\-_.]+)\.html",
+        base_url="https://investcollect.com",
+    )
+
+
+def fetch_maisondelapresse():
+    """Cas particulier : on cible specifiquement la grille de produits de la
+    categorie (<ol class="products list items product-items">), pas toute la
+    page, pour eviter de capturer des widgets de recommandation qui changent
+    de contenu a chaque requete sans lien avec le vrai catalogue."""
+    base_url = "https://www.maisondelapresse.com/jeux-jouets/cartes-collectionner/cartes-pokemon.html"
+    products = {}
+
+    for page in range(1, MAX_PAGES_DEFAULT + 1):
+        resp = requests.get(base_url, params={"p": page}, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        links = soup.select("ol.products.list.items.product-items a.product-item-link")
+        if not links:
+            links = soup.select("a.product-item-link")
+        if not links:
+            break
+
+        for a in links:
+            url = a.get("href", "").split("?")[0]
+            if not url:
+                continue
+            title = a.get_text(strip=True)
+            if url not in products:
+                products[url] = {
+                    "title": title if title else "(titre indisponible)",
+                    "url": url,
+                }
+
+    return products
+
+
+def fetch_playin():
+    return fetch_url_pattern(
+        page_url="https://www.play-in.com/fr/gamme/3/pokemon/catalogue",
+        id_pattern=r"/fr/produit/(\d+)/[a-z0-9\-]+",
+        base_url="https://www.play-in.com",
+    )
+
+
+def fetch_lecoindesbarons():
+    return fetch_url_pattern(
+        page_url="https://lecoindesbarons.com/les-tcg/cartes-pokemon/",
+        id_pattern=r"(/tradingcard-game/cartes-pokemon/[a-z0-9\-]+/)$",
+        base_url="https://lecoindesbarons.com",
+        params_key="paged",
+        max_pages=5,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Configuration de tous les sites suivis. Chaque entree : cle d'etat,
+# libelle pour les notifs, fonction de recuperation.
+# ---------------------------------------------------------------------------
+
+SITES = [
+    ("philibert", "Philibert", fetch_philibert),
+    ("strikegames", "Strike Games", fetch_strikegames),
+    ("investcollect", "InvestCollect", fetch_investcollect),
+    ("maisondelapresse", "Maison de la Presse", fetch_maisondelapresse),
+    ("tradingcardsxxx", "Tradingcardsxxx", lambda: fetch_shopify("https://tradingcardsxxx.fr", "pokemon")),
+    ("lebordelmagique", "Le Bordel Magique", lambda: fetch_shopify("https://lebordelmagique.com", "pokemon-fr")),
+    ("relictcg", "RelicTCG", lambda: fetch_shopify("https://www.relictcg.com", "pokemon")),
+    ("kairyu", "Kairyu", lambda: fetch_shopify("https://kairyu.fr", "frjap-scelle")),
+    ("masterset", "Masterset", lambda: fetch_shopify("https://masterset.store", "pokemon")),
+    ("kingdultes", "Kingdultes", lambda: fetch_shopify("https://www.kingdultes.com", "tcg-pokemon")),
+    ("ludiworld", "Ludiworld", lambda: fetch_prestashop_id_pattern(
+        category_url="https://www.ludiworld.com/148-pokemon",
+        id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
+        base_url="https://www.ludiworld.com",
+    )),
+    ("ludocortex", "Ludocortex", lambda: fetch_prestashop_id_pattern(
+        category_url="https://www.ludocortex.fr/58-pokemon-tcg",
+        id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
+        base_url="https://www.ludocortex.fr",
+    )),
+    ("bcdjeux", "BCD Jeux", lambda: fetch_prestashop_id_pattern(
+        category_url="https://www.bcd-jeux.fr/511809-pokemon-tcg",
+        id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
+        base_url="https://www.bcd-jeux.fr",
+    )),
+    ("lesgentlemendujeu", "Les Gentlemen du Jeu", lambda: fetch_prestashop_id_pattern(
+        category_url="https://lesgentlemendujeu.com/14-cartes-a-collectionner/s-6/cartes_a_collectionner-pokemon",
+        id_pattern=r"/(\d+)-[a-z0-9_-]+\.html",
+        base_url="https://lesgentlemendujeu.com",
+    )),
+    ("playin", "Playin", fetch_playin),
+    ("lecoindesbarons", "Le Coin des Barons", fetch_lecoindesbarons),
+]
 
 
 def load_state():
     if STATE_FILE.exists():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {
-        "philibert": {},
-        "strikegames": {},
-        "investcollect": {},
-        "maisondelapresse": {},
-    }
+    return {key: {} for key, _, _ in SITES}
 
 
 def save_state(state):
@@ -80,146 +286,9 @@ def send_notification(title, message, url=None):
         print(f"Erreur envoi notification ntfy: {e}", file=sys.stderr)
 
 
-def fetch_philibert():
-    """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour Philibert."""
-    resp = requests.get(PHILIBERT_URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    products = {}
-    # Les liens produits Pokemon suivent le format:
-    # /fr/pokemon/<id>-<slug>.html
-    pattern = re.compile(r"/fr/pokemon/(\d+)-[a-z0-9-]+\.html")
-
-    for a in soup.find_all("a", href=True):
-        m = pattern.search(a["href"])
-        if not m:
-            continue
-        product_id = m.group(1)
-        title = a.get_text(strip=True)
-        url = a["href"]
-        if not url.startswith("http"):
-            url = "https://www.philibertnet.com" + url
-        # On garde le premier titre non vide rencontre pour cet id
-        if product_id not in products or (not products[product_id]["title"] and title):
-            if title:
-                products[product_id] = {"title": title, "url": url}
-            elif product_id not in products:
-                products[product_id] = {"title": "(titre indisponible)", "url": url}
-
-    return products
-
-
-def fetch_strikegames():
-    """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour Strike Games."""
-    resp = requests.get(STRIKEGAMES_JSON_URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    products = {}
-    for p in data.get("products", []):
-        product_id = str(p["id"])
-        title = p.get("title", "(titre indisponible)")
-        handle = p.get("handle", "")
-        url = f"https://strikegames.shop/products/{handle}"
-        products[product_id] = {"title": title, "url": url}
-
-    return products
-
-
-def fetch_investcollect():
-    """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour InvestCollect.
-
-    Le catalogue est paginé (?p=1, ?p=2, ...). On parcourt les pages jusqu'à
-    ce qu'une page ne ramène plus de nouveau produit (ou jusqu'au garde-fou
-    INVESTCOLLECT_MAX_PAGES).
-    """
-    products = {}
-    # Les liens produits suivent le format: /eshop/p/<slug>.html
-    pattern = re.compile(r"/eshop/p/([a-z0-9\-_.]+)\.html")
-
-    for page in range(1, INVESTCOLLECT_MAX_PAGES + 1):
-        resp = requests.get(
-            INVESTCOLLECT_BASE_URL, params={"p": page}, headers=HEADERS, timeout=30
-        )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        found_on_this_page = 0
-        for a in soup.find_all("a", href=True):
-            m = pattern.search(a["href"])
-            if not m:
-                continue
-            slug = m.group(1)
-            title = a.get_text(strip=True)
-            url = a["href"].split("?")[0]
-            if not url.startswith("http"):
-                url = "https://investcollect.com" + url
-
-            if slug not in products:
-                found_on_this_page += 1
-                products[slug] = {
-                    "title": title if title else "(titre indisponible)",
-                    "url": url,
-                }
-            elif title and products[slug]["title"] == "(titre indisponible)":
-                products[slug]["title"] = title
-
-        if found_on_this_page == 0:
-            # Page vide ou déjà entièrement vue : on a atteint la fin du catalogue
-            break
-
-    return products
-
-
-def fetch_maisondelapresse():
-    """Retourne un dict {id_produit: {"title": ..., "url": ...}} pour Maison de la Presse.
-
-    Site Magento : on cible specifiquement la grille de produits de la
-    categorie (<ol class="products list items product-items">), pas toute
-    la page. Cela evite de capturer des widgets de recommandation
-    ("vous aimerez aussi", "recemment consultes") qui utilisent la meme
-    classe de lien mais changent de contenu a chaque requete sans lien
-    avec le vrai catalogue.
-    Pagination classique via ?p=2, ?p=3, etc.
-    """
-    products = {}
-
-    for page in range(1, MAISONDELAPRESSE_MAX_PAGES + 1):
-        resp = requests.get(
-            MAISONDELAPRESSE_BASE_URL, params={"p": page}, headers=HEADERS, timeout=30
-        )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Cible uniquement la grille de produits de la categorie (structure
-        # Magento standard). Fallback sur le selecteur large si la grille
-        # n'est pas trouvee, pour ne jamais tomber a zero silencieusement.
-        links = soup.select("ol.products.list.items.product-items a.product-item-link")
-        if not links:
-            links = soup.select("a.product-item-link")
-
-        if not links:
-            # Page veritablement vide : fin du catalogue
-            break
-
-        for a in links:
-            url = a.get("href", "").split("?")[0]
-            if not url:
-                continue
-            title = a.get_text(strip=True)
-            # Utilise l'URL elle-meme comme identifiant unique du produit
-            if url not in products:
-                products[url] = {
-                    "title": title if title else "(titre indisponible)",
-                    "url": url,
-                }
-
-    return products
-
-
 def diff_and_notify(site_label, previous, current):
-    """Compare les dicts previous/current, notifie les nouveaux, retourne l'etat fusionne.
+    """Compare les dicts previous/current, notifie les nouveaux, retourne
+    l'etat fusionne (jamais un simple remplacement, voir explication ci-dessous).
 
     IMPORTANT : on fusionne previous et current (au lieu de remplacer par
     current) pour ne jamais "oublier" un produit qui aurait disparu
@@ -231,8 +300,6 @@ def diff_and_notify(site_label, previous, current):
     new_ids = [pid for pid in current if pid not in previous]
 
     if not previous:
-        # Premiere execution pour ce site : on enregistre l'etat sans notifier
-        # pour eviter un spam de toutes les alertes existantes.
         print(f"[{site_label}] Premiere execution : {len(current)} produits enregistres (pas de notif).")
         return current
 
@@ -248,64 +315,24 @@ def diff_and_notify(site_label, previous, current):
             message=item["title"],
             url=item["url"],
         )
-        time.sleep(1)  # petite pause pour ne pas spammer ntfy d'un coup
+        time.sleep(1)
 
-    # Fusion : on garde tout ce qui etait deja connu, et on ajoute/rafraichit
-    # avec les infos les plus recentes pour les produits toujours presents.
     merged = dict(previous)
     merged.update(current)
     return merged
 
 
-
 def main():
     state = load_state()
 
-    try:
-        philibert_current = fetch_philibert()
-    except Exception as e:
-        print(f"Erreur recuperation Philibert: {e}", file=sys.stderr)
-        philibert_current = None
+    for key, label, fetch_fn in SITES:
+        try:
+            current = fetch_fn()
+        except Exception as e:
+            print(f"Erreur recuperation {label}: {e}", file=sys.stderr)
+            continue
 
-    try:
-        strikegames_current = fetch_strikegames()
-    except Exception as e:
-        print(f"Erreur recuperation Strike Games: {e}", file=sys.stderr)
-        strikegames_current = None
-
-    try:
-        investcollect_current = fetch_investcollect()
-    except Exception as e:
-        print(f"Erreur recuperation InvestCollect: {e}", file=sys.stderr)
-        investcollect_current = None
-
-    try:
-        maisondelapresse_current = fetch_maisondelapresse()
-    except Exception as e:
-        print(f"Erreur recuperation Maison de la Presse: {e}", file=sys.stderr)
-        maisondelapresse_current = None
-
-    if philibert_current is not None:
-        state["philibert"] = diff_and_notify(
-            "Philibert", state.get("philibert", {}), philibert_current
-        )
-
-    if strikegames_current is not None:
-        state["strikegames"] = diff_and_notify(
-            "Strike Games", state.get("strikegames", {}), strikegames_current
-        )
-
-    if investcollect_current is not None:
-        state["investcollect"] = diff_and_notify(
-            "InvestCollect", state.get("investcollect", {}), investcollect_current
-        )
-
-    if maisondelapresse_current is not None:
-        state["maisondelapresse"] = diff_and_notify(
-            "Maison de la Presse",
-            state.get("maisondelapresse", {}),
-            maisondelapresse_current,
-        )
+        state[key] = diff_and_notify(label, state.get(key, {}), current)
 
     save_state(state)
 
