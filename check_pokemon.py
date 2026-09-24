@@ -27,7 +27,9 @@ NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}" if NTFY_TOPIC else None
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
 MAX_PAGES_DEFAULT = 15  # garde-fou pour ne jamais boucler a l'infini sur un site pagine
@@ -206,7 +208,7 @@ def fetch_playin():
 def fetch_lecoindesbarons():
     return fetch_url_pattern(
         page_url="https://lecoindesbarons.com/les-tcg/cartes-pokemon/",
-        id_pattern=r"(/tradingcard-game/cartes-pokemon/[a-z0-9\-]+/)$",
+        id_pattern=r"(/tradingcard-game/cartes-pokemon/[a-z0-9\-/]+/)",
         base_url="https://lecoindesbarons.com",
         params_key="paged",
         max_pages=5,
