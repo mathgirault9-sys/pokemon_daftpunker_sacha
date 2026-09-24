@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Surveillance de nouveaux produits Pokemon sur une liste de sites marchands.
@@ -60,15 +61,29 @@ def fetch_shopify(base_url, collection_handle):
     return products
 
 
-def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MAX_PAGES_DEFAULT):
+def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MAX_PAGES_DEFAULT, warmup_url=None):
     """Sites PrestaShop : les liens produits contiennent un identifiant
     numerique stable dans l'URL (ex: /fr/pokemon/12345-nom-du-produit.html).
-    Pagination classique via ?page=N."""
+    Pagination classique via ?page=N.
+
+    Si warmup_url est fourni, on visite d'abord cette page avec une session
+    (pour recuperer d'eventuels cookies anti-bot) avant de requeter la page
+    cible, avec un Referer. Cela peut aider a passer des protections legeres,
+    mais ne garantit rien contre une protection basee sur l'empreinte TLS
+    (Cloudflare/DataDome), que la librairie requests ne peut pas reproduire.
+    """
     products = {}
     pattern = re.compile(id_pattern)
 
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    request_headers = {}
+    if warmup_url:
+        session.get(warmup_url, timeout=30)
+        request_headers["Referer"] = warmup_url
+
     for page in range(1, max_pages + 1):
-        resp = requests.get(category_url, params={"page": page}, headers=HEADERS, timeout=30)
+        resp = session.get(category_url, params={"page": page}, headers=request_headers, timeout=30)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -168,12 +183,24 @@ def fetch_maisondelapresse():
     """Cas particulier : on cible specifiquement la grille de produits de la
     categorie (<ol class="products list items product-items">), pas toute la
     page, pour eviter de capturer des widgets de recommandation qui changent
-    de contenu a chaque requete sans lien avec le vrai catalogue."""
+    de contenu a chaque requete sans lien avec le vrai catalogue.
+
+    Le site a migre vers un nouveau theme (Hyva) qui semble accompagne d'une
+    protection anti-bot plus stricte : on utilise une session avec visite
+    prealable de la page d'accueil (cookies) et un Referer, comme pour
+    Ludocortex. Pas de garantie de contournement si la protection repose sur
+    l'empreinte TLS plutot que sur les cookies/en-tetes.
+    """
     base_url = "https://www.maisondelapresse.com/jeux-jouets/cartes-collectionner/cartes-pokemon.html"
     products = {}
 
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    session.get("https://www.maisondelapresse.com/", timeout=30)
+    request_headers = {"Referer": "https://www.maisondelapresse.com/"}
+
     for page in range(1, MAX_PAGES_DEFAULT + 1):
-        resp = requests.get(base_url, params={"p": page}, headers=HEADERS, timeout=30)
+        resp = session.get(base_url, params={"p": page}, headers=request_headers, timeout=30)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -226,10 +253,7 @@ SITES = [
     ("investcollect", "InvestCollect", fetch_investcollect),
     ("maisondelapresse", "Maison de la Presse", fetch_maisondelapresse),
     ("tradingcardsxxx", "Tradingcardsxxx", lambda: fetch_shopify("https://tradingcardsxxx.fr", "pokemon")),
-    ("lebordelmagique", "Le Bordel Magique", lambda: fetch_shopify("https://lebordelmagique.com", "pokemon-fr")),
     ("relictcg", "RelicTCG", lambda: fetch_shopify("https://www.relictcg.com", "pokemon")),
-    ("kairyu", "Kairyu", lambda: fetch_shopify("https://kairyu.fr", "frjap-scelle")),
-    ("masterset", "Masterset", lambda: fetch_shopify("https://masterset.store", "pokemon")),
     ("kingdultes", "Kingdultes", lambda: fetch_shopify("https://www.kingdultes.com", "tcg-pokemon")),
     ("ludiworld", "Ludiworld", lambda: fetch_prestashop_id_pattern(
         category_url="https://www.ludiworld.com/148-pokemon",
@@ -240,16 +264,12 @@ SITES = [
         category_url="https://www.ludocortex.fr/58-pokemon-tcg",
         id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
         base_url="https://www.ludocortex.fr",
+        warmup_url="https://www.ludocortex.fr/",
     )),
     ("bcdjeux", "BCD Jeux", lambda: fetch_prestashop_id_pattern(
         category_url="https://www.bcd-jeux.fr/511809-pokemon-tcg",
         id_pattern=r"/(\d+)-[a-z0-9-]+\.html",
         base_url="https://www.bcd-jeux.fr",
-    )),
-    ("lesgentlemendujeu", "Les Gentlemen du Jeu", lambda: fetch_prestashop_id_pattern(
-        category_url="https://lesgentlemendujeu.com/14-cartes-a-collectionner/s-6/cartes_a_collectionner-pokemon",
-        id_pattern=r"/(\d+)-[a-z0-9_-]+\.html",
-        base_url="https://lesgentlemendujeu.com",
     )),
     ("playin", "Playin", fetch_playin),
     ("lecoindesbarons", "Le Coin des Barons", fetch_lecoindesbarons),
