@@ -179,6 +179,17 @@ def fetch_lagranderecre():
     )
 
 
+def fetch_joueclub():
+    """Meme plateforme que La Grande Recre (Planet Unified Commerce), mais
+    ici l'URL avec parametres de filtre n'est pas bloquee par le robots.txt
+    du site (verifie manuellement), donc on peut l'utiliser directement."""
+    return fetch_prestashop_id_pattern(
+        category_url="https://www.joueclub.fr/nos-heros/pokemon.html",
+        id_pattern=r"/(pokemon/[a-z0-9\-]+\.html)",
+        base_url="https://www.joueclub.fr",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Configuration de tous les sites suivis. Chaque entree : cle d'etat,
 # libelle pour les notifs, fonction de recuperation.
@@ -190,6 +201,7 @@ SITES = [
     ("investcollect", "InvestCollect", fetch_investcollect),
     ("destocktcg", "DestockTCG", fetch_destocktcg),
     ("lagranderecre", "La Grande Récré", fetch_lagranderecre),
+    ("joueclub", "JouéClub", fetch_joueclub),
 ]
 
 
