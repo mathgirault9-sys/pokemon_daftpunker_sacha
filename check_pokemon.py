@@ -60,6 +60,31 @@ def fetch_shopify(base_url, collection_handle):
     return products
 
 
+JAPANESE_MARKERS = ("jp", "japonais", "japon", "jap ")
+
+
+def fetch_pikaboutique():
+    """Pika-Boutique n'a pas de collection unique couvrant tout le scelle
+    francais : on combine les 4 collections qui, ensemble, representent le
+    catalogue FR (le japonais a sa propre collection separee, 'Japonais',
+    volontairement exclue ici). On filtre aussi par securite tout produit
+    dont le titre indique explicitement une version japonaise, au cas ou
+    un article JP se retrouverait mal classe dans une des 4 collections."""
+    base_url = "https://pika-boutique.fr"
+    collections = ["etb", "displays", "box-coffrets", "boosters"]
+    products = {}
+
+    for handle in collections:
+        batch = fetch_shopify(base_url, handle)
+        for product_id, item in batch.items():
+            title_lower = item["title"].lower()
+            if any(marker in title_lower for marker in JAPANESE_MARKERS):
+                continue
+            products[product_id] = item
+
+    return products
+
+
 def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MAX_PAGES_DEFAULT, warmup_url=None):
     """Sites PrestaShop : les liens produits contiennent un identifiant
     numerique stable dans l'URL (ex: /fr/pokemon/12345-nom-du-produit.html).
@@ -182,6 +207,12 @@ SITES = [
     ("strikegames", "Strike Games", fetch_strikegames),
     ("investcollect", "InvestCollect", fetch_investcollect),
     ("auxtroiskoalas", "Aux Trois Koalas", fetch_auxtroiskoalas),
+    ("arakemon", "Arakemon", lambda: fetch_prestashop_id_pattern(
+        category_url="https://www.arakemon.com/coffrets-pokemon",
+        id_pattern=r"/(product-page/[^?\s\"']+)",
+        base_url="https://www.arakemon.com",
+    )),
+    ("pikaboutique", "Pika-Boutique", fetch_pikaboutique),
 ]
 
 
