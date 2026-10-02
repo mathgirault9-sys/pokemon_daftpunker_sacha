@@ -132,38 +132,42 @@ def fetch_investcollect():
     )
 
 
-def fetch_destocktcg():
-    """DestockTCG bloque l'outil de previsualisation utilise en amont pour
-    verifier le HTML (403/404 systematique sur les pages de categorie,
-    probable protection anti-scraping), donc ce site n'a pas pu etre
-    verifie directement. On s'appuie sur le pattern d'URL des pages
-    produits (/product/<slug>), confirme via des pages accessibles
-    (accueil, resultats de recherche). A tester en conditions reelles."""
-    url = "https://www.destocktcg.fr/jeux-de-cartes-a-collectionner/pokemon/"
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-
+def fetch_auxtroiskoalas():
+    """Site Odoo (verifie directement, HTML propre genere cote serveur).
+    Pagination particuliere : via un suffixe de chemin /page/N (pas un
+    parametre de requete ?page=N comme les sites PrestaShop)."""
+    base_category_url = "https://www.auxtroiskoalas.fr/shop/category/pokemon-coffrets-428"
+    id_pattern = re.compile(r"/shop/pokemon-coffrets-428/[a-z0-9\-]+-(\d+)")
     products = {}
-    pattern = re.compile(r"/product/([a-z0-9\-]+)")
 
-    for a in soup.find_all("a", href=True):
-        m = pattern.search(a["href"])
-        if not m:
-            continue
-        slug = m.group(1)
-        title = a.get_text(strip=True)
-        link = a["href"].split("?")[0]
-        if not link.startswith("http"):
-            link = "https://www.destocktcg.fr" + link
+    for page in range(1, MAX_PAGES_DEFAULT + 1):
+        url = base_category_url if page == 1 else f"{base_category_url}/page/{page}"
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-        if slug not in products:
-            products[slug] = {
-                "title": title if title else "(titre indisponible)",
-                "url": link,
-            }
-        elif title and products[slug]["title"] == "(titre indisponible)":
-            products[slug]["title"] = title
+        found_on_this_page = 0
+        for a in soup.find_all("a", href=True):
+            m = id_pattern.search(a["href"])
+            if not m:
+                continue
+            product_id = m.group(1)
+            title = a.get_text(strip=True)
+            link = a["href"].split("?")[0]
+            if not link.startswith("http"):
+                link = "https://www.auxtroiskoalas.fr" + link
+
+            if product_id not in products:
+                found_on_this_page += 1
+                products[product_id] = {
+                    "title": title if title else "(titre indisponible)",
+                    "url": link,
+                }
+            elif title and products[product_id]["title"] == "(titre indisponible)":
+                products[product_id]["title"] = title
+
+        if found_on_this_page == 0:
+            break
 
     return products
 
@@ -177,7 +181,7 @@ SITES = [
     ("philibert", "Philibert", fetch_philibert),
     ("strikegames", "Strike Games", fetch_strikegames),
     ("investcollect", "InvestCollect", fetch_investcollect),
-    ("destocktcg", "DestockTCG", fetch_destocktcg),
+    ("auxtroiskoalas", "Aux Trois Koalas", fetch_auxtroiskoalas),
 ]
 
 
