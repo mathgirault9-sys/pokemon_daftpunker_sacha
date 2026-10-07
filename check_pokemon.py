@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import requests
@@ -40,16 +41,20 @@ MAX_PAGES_DEFAULT = 15  # garde-fou pour ne jamais boucler a l'infini sur un sit
 # de plateforme e-commerce)
 # ---------------------------------------------------------------------------
 
-def fetch_shopify(base_url, collection_handle):
-    """Sites Shopify : on utilise l'API JSON native /products.json, beaucoup
-    plus fiable qu'un scraping HTML (pas de classe CSS a deviner)."""
+def fetch_shopify_raw(base_url, collection_handle):
+    """Retourne la liste brute des produits d'une collection Shopify (API
+    JSON native /products.json), avec tous leurs champs (tags, vendor...)."""
     url = f"{base_url}/collections/{collection_handle}/products.json?limit=250"
     resp = requests.get(url, headers=HEADERS, timeout=30)
     resp.raise_for_status()
-    data = resp.json()
+    return resp.json().get("products", [])
 
+
+def fetch_shopify(base_url, collection_handle):
+    """Sites Shopify : on utilise l'API JSON native /products.json, beaucoup
+    plus fiable qu'un scraping HTML (pas de classe CSS a deviner)."""
     products = {}
-    for p in data.get("products", []):
+    for p in fetch_shopify_raw(base_url, collection_handle):
         product_id = str(p["id"])
         title = p.get("title", "(titre indisponible)")
         handle = p.get("handle", "")
@@ -63,25 +68,66 @@ def fetch_shopify(base_url, collection_handle):
 JAPANESE_MARKERS = ("jp", "japonais", "japon", "jap ")
 
 
+def _normalize(text):
+    """Minuscules et sans accents (pour comparer 'Pokémon' et 'pokemon')."""
+    text = unicodedata.normalize("NFD", str(text).lower())
+    return "".join(c for c in text if unicodedata.category(c) != "Mn")
+
+
+# Autres jeux de cartes vendus par Pika-Boutique (a completer si un autre
+# jeu s'infiltre dans les notifications).
+OTHER_GAMES_PATTERN = re.compile(
+    r"\b(one piece|riftbound|yu-?gi-?oh|lorcana|magic|mtg|dragon ball|digimon|"
+    r"union arena|star wars|flesh and blood|naruto|weiss|gundam|final fantasy|"
+    r"vanguard|grand archive|altered|metazoo|sorcery)\b"
+)
+
+
+def is_pokemon_product(p):
+    """Decide si un produit Shopify est un produit Pokemon, a partir de son
+    titre, sa marque, son type et ses tags. Regle : 'pokemon' present
+    quelque part -> garde ; sinon un autre jeu cite -> ecarte ; sinon garde
+    (pour ne pas rater un produit Pokemon dont le titre ne le mentionne pas,
+    ex: 'Coffret ULTRA PREMIUM Terapagos EX [FR]')."""
+    tags = p.get("tags", [])
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    text = _normalize(
+        " ".join([p.get("title", ""), p.get("vendor", ""), p.get("product_type", "")] + list(tags))
+    )
+    if "pokemon" in text:
+        return True
+    if OTHER_GAMES_PATTERN.search(text):
+        return False
+    return True
+
+
 def fetch_pikaboutique():
-    """Pika-Boutique n'a pas de collection unique couvrant tout le scelle
-    francais : on combine les 4 collections qui, ensemble, representent le
-    catalogue FR (le japonais a sa propre collection separee, 'Japonais',
-    volontairement exclue ici). On filtre aussi par securite tout produit
-    dont le titre indique explicitement une version japonaise, au cas ou
-    un article JP se retrouverait mal classe dans une des 4 collections."""
+    """Pika-Boutique vend plusieurs jeux (Pokemon, One Piece, Riftbound...) et
+    n'a pas de collection unique 'Pokemon FR' : on combine les 4 collections
+    de scelle (le japonais a sa propre collection, exclue ici), puis on
+    filtre (1) tout ce qui n'est pas Pokemon, (2) tout titre indiquant une
+    version japonaise."""
     base_url = "https://pika-boutique.fr"
     collections = ["etb", "displays", "box-coffrets", "boosters"]
     products = {}
+    ignored = 0
 
     for handle in collections:
-        batch = fetch_shopify(base_url, handle)
-        for product_id, item in batch.items():
-            title_lower = item["title"].lower()
-            if any(marker in title_lower for marker in JAPANESE_MARKERS):
+        for p in fetch_shopify_raw(base_url, handle):
+            title = p.get("title", "(titre indisponible)")
+            if any(marker in title.lower() for marker in JAPANESE_MARKERS):
+                ignored += 1
                 continue
-            products[product_id] = item
+            if not is_pokemon_product(p):
+                ignored += 1
+                continue
+            products[str(p["id"])] = {
+                "title": title,
+                "url": f"{base_url}/products/{p.get('handle', '')}",
+            }
 
+    print(f"[Pika-Boutique] {ignored} produit(s) ecarte(s) (non-Pokemon ou japonais).")
     return products
 
 
