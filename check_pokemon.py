@@ -285,14 +285,22 @@ def fetch_destocktcg():
     produit porte un drapeau de langue ('Langue : fr') et eventuellement une
     etiquette d'etat : classe 'preorder' (precommande) ou 'outofstock' (en
     reassort). Sans etiquette (ou avec une etiquette promo), le produit est
-    commandable. Pagination via ?page=N."""
+    commandable. Pagination via ?page=N.
+
+    Le site renvoie une erreur 403 a la librairie requests (protection
+    anti-bot basee sur l'empreinte TLS) : on passe donc par curl_cffi, qui
+    imite l'empreinte d'un vrai navigateur Chrome."""
+    from curl_cffi import requests as browser_requests
+
     base_url = "https://www.destocktcg.fr"
     category_url = f"{base_url}/jeux-de-cartes-a-collectionner/pokemon/"
     id_pattern = re.compile(r"/product/[a-z0-9\-]+-(\d+)$")
     products = {}
 
     for page in range(1, MAX_PAGES_DEFAULT + 1):
-        resp = requests.get(category_url, params={"page": page}, headers=HEADERS, timeout=30)
+        resp = browser_requests.get(
+            category_url, params={"page": page}, impersonate="chrome", timeout=30
+        )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.content, "html.parser")
 
