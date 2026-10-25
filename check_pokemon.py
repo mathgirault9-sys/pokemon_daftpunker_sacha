@@ -273,6 +273,93 @@ def fetch_auxtroiskoalas():
     return products
 
 
+DESTOCKTCG_STATUS_LABELS = {
+    "precommande": "en précommande",
+    "reassort": "en réassort",
+    "disponible": "disponible",
+}
+
+
+def fetch_destocktcg():
+    """DestockTCG (site maison, HTML genere cote serveur). Chaque vignette
+    produit porte un drapeau de langue ('Langue : fr') et eventuellement une
+    etiquette d'etat : classe 'preorder' (precommande) ou 'outofstock' (en
+    reassort). Sans etiquette (ou avec une etiquette promo), le produit est
+    commandable. Pagination via ?page=N."""
+    base_url = "https://www.destocktcg.fr"
+    category_url = f"{base_url}/jeux-de-cartes-a-collectionner/pokemon/"
+    id_pattern = re.compile(r"/product/[a-z0-9\-]+-(\d+)$")
+    products = {}
+
+    for page in range(1, MAX_PAGES_DEFAULT + 1):
+        resp = requests.get(category_url, params={"page": page}, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.content, "html.parser")
+
+        found_on_this_page = 0
+        for card in soup.select(".product-item-info"):
+            a = card.find("a", href=id_pattern)
+            if not a:
+                continue
+            link = a["href"].split("?")[0]
+            product_id = id_pattern.search(link).group(1)
+            if product_id in products:
+                continue
+            if not link.startswith("http"):
+                link = base_url + link
+
+            flag = card.select_one(".product-thumb-flag")
+            if flag and not _normalize(flag.get("alt", "")).endswith(": fr"):
+                continue
+
+            label = card.select_one(".product-item-label")
+            label_classes = label.get("class", []) if label else []
+            if "preorder" in label_classes:
+                status = "precommande"
+            elif "outofstock" in label_classes:
+                status = "reassort"
+            else:
+                status = "disponible"
+
+            found_on_this_page += 1
+            products[product_id] = {
+                "title": a.get("title") or a.get_text(strip=True) or "(titre indisponible)",
+                "url": link,
+                "status": status,
+            }
+
+        if found_on_this_page == 0:
+            break
+
+    return products
+
+
+def diff_status_and_notify(site_label, previous, current):
+    """Comme diff_and_notify, mais previent aussi quand un produit deja vu
+    devient commandable : passage a 'disponible' (depuis precommande ou
+    reassort) ou a 'precommande' (depuis reassort)."""
+    merged = diff_and_notify(site_label, previous, current)
+    if not previous:
+        return merged
+
+    for pid, item in current.items():
+        old_status = previous.get(pid, {}).get("status")
+        new_status = item["status"]
+        if pid not in previous or old_status == new_status or new_status == "reassort":
+            continue
+        if old_status is None and new_status == "precommande":
+            continue
+        print(f"[{site_label}] {item['title']} : {old_status} -> {new_status}")
+        send_notification(
+            title=f"Pokemon {DESTOCKTCG_STATUS_LABELS[new_status]} - {site_label}",
+            message=item["title"],
+            url=item["url"],
+        )
+        time.sleep(1)
+
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Configuration de tous les sites suivis. Chaque entree : cle d'etat,
 # libelle pour les notifs, fonction de recuperation.
@@ -289,7 +376,11 @@ SITES = [
         base_url="https://www.arakemon.com",
     )),
     ("pikaboutique", "Pika-Boutique", fetch_pikaboutique),
+    ("destocktcg", "DestockTCG", fetch_destocktcg),
 ]
+
+# Sites dont on suit aussi l'etat (precommande / reassort / disponible)
+STATUS_TRACKED_SITES = {"destocktcg"}
 
 
 def load_state():
@@ -373,7 +464,8 @@ def main():
             print(f"Erreur recuperation {label}: {e}", file=sys.stderr)
             continue
 
-        state[key] = diff_and_notify(label, state.get(key, {}), current)
+        diff_fn = diff_status_and_notify if key in STATUS_TRACKED_SITES else diff_and_notify
+        state[key] = diff_fn(label, state.get(key, {}), current)
 
     save_state(state)
 
