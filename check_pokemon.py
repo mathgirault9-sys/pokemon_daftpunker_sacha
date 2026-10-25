@@ -17,6 +17,7 @@ import sys
 import time
 import unicodedata
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -83,6 +84,45 @@ OTHER_GAMES_PATTERN = re.compile(
 )
 
 
+# Mentions d'une langue autre que le francais dans un titre ou une URL de
+# produit. On ne garde que les produits francais : tout produit qui porte une
+# de ces mentions est ecarte, sur tous les sites. Attention aux faux positifs :
+# pas de "en" seul (mot francais), ni de "ko" seul ("Collection K.O." est FR).
+FOREIGN_LANGUAGE_PATTERN = re.compile(
+    r"\b(chinois|chinoise|chinese|simplifie|traditionnel|cn|sc|tc|"
+    r"japonais|japonaise|japanese|japon|jap|jp|jpn|"
+    r"coreen|coreenne|korean|kor|kr|"
+    r"anglais|anglaise|english|eng|us|uk|"
+    r"allemand|allemande|german|deutsch|"
+    r"italien|italienne|italian|espagnol|espagnole|spanish|"
+    r"portugais|portuguese|neerlandais|dutch|"
+    r"thai|thailandais|indonesien|indonesian|"
+    r"version (?:en|de|it|es|pt|nl))\b"
+    r"|[\[(](?:en|de|it|es|pt|nl|ko)[\])]"
+)
+
+
+FRENCH_PATTERN = re.compile(r"\b(fr|vf|francais|francaise|version francaise)\b")
+
+
+def _language_text(text):
+    text = _normalize(unquote(str(text or "")))
+    return re.sub(r"[-_/]+", " ", text)
+
+
+def is_foreign_language(title, *other_texts):
+    """True si le titre (ou a defaut l'URL / l'identifiant) indique une langue
+    autre que le francais (ex: 'First Partner Vol.1 - Chinois simplifie').
+    Une mention FR explicite dans le titre l'emporte sur l'URL (certaines
+    boutiques reutilisent l'URL d'un produit anglais pour la version FR)."""
+    title_text = _language_text(title)
+    if FOREIGN_LANGUAGE_PATTERN.search(title_text):
+        return True
+    if FRENCH_PATTERN.search(title_text):
+        return False
+    return any(FOREIGN_LANGUAGE_PATTERN.search(_language_text(t)) for t in other_texts)
+
+
 def is_pokemon_product(p):
     """Decide si un produit Shopify est un produit Pokemon, a partir de son
     titre, sa marque, son type et ses tags. Regle : 'pokemon' present
@@ -116,7 +156,7 @@ def fetch_pikaboutique():
     for handle in collections:
         for p in fetch_shopify_raw(base_url, handle):
             title = p.get("title", "(titre indisponible)")
-            if any(marker in title.lower() for marker in JAPANESE_MARKERS):
+            if any(marker in title.lower() for marker in JAPANESE_MARKERS) or is_foreign_language(title):
                 ignored += 1
                 continue
             if not is_pokemon_product(p):
@@ -127,8 +167,32 @@ def fetch_pikaboutique():
                 "url": f"{base_url}/products/{p.get('handle', '')}",
             }
 
-    print(f"[Pika-Boutique] {ignored} produit(s) ecarte(s) (non-Pokemon ou japonais).")
+    print(f"[Pika-Boutique] {ignored} produit(s) ecarte(s) (non-Pokemon ou non francais).")
     return products
+
+
+# Textes de liens qui ne sont pas le nom du produit (ex: le bouton "Apercu
+# rapide" des sites Wix comme Arakemon, qui pointe vers la meme page produit).
+GENERIC_LINK_TEXTS = {
+    "", "apercu rapide", "quick view", "voir plus", "voir le produit",
+    "en savoir plus", "ajouter au panier", "acheter", "details",
+    "creer une alerte",
+    "(titre indisponible)",
+}
+
+
+def is_generic_title(title):
+    return _normalize(title).strip() in GENERIC_LINK_TEXTS
+
+
+def title_from_slug(url):
+    """Titre de secours tire de l'URL (ex: .../coffret-pokemon-mega-latias-ex
+    -> 'Coffret pokémon méga latias ex')."""
+    slug = unquote(url.rstrip("/").rsplit("/", 1)[-1])
+    slug = re.sub(r"\.html$", "", slug)
+    slug = re.sub(r"^\d+-", "", slug)
+    words = re.sub(r"[-_]+", " ", slug).strip()
+    return words[:1].upper() + words[1:] if words else "(titre indisponible)"
 
 
 def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MAX_PAGES_DEFAULT, warmup_url=None):
@@ -174,11 +238,15 @@ def fetch_prestashop_id_pattern(category_url, id_pattern, base_url, max_pages=MA
                     "title": title if title else "(titre indisponible)",
                     "url": url,
                 }
-            elif title and products[product_id]["title"] == "(titre indisponible)":
+            elif not is_generic_title(title) and is_generic_title(products[product_id]["title"]):
                 products[product_id]["title"] = title
 
         if found_on_this_page == 0:
             break
+
+    for item in products.values():
+        if is_generic_title(item["title"]):
+            item["title"] = title_from_slug(item["url"])
 
     return products
 
@@ -294,6 +362,18 @@ def send_notification(title, message, url=None):
         print(f"Erreur envoi notification ntfy: {e}", file=sys.stderr)
 
 
+def keep_french_only(site_label, products):
+    """Ecarte les produits dont le titre ou l'URL indique une langue autre que
+    le francais (chinois, japonais, coreen, anglais...)."""
+    kept = {}
+    for pid, item in products.items():
+        if is_foreign_language(item.get("title"), item.get("url"), pid):
+            print(f"[{site_label}] Ecarte (non francais) : {item.get('title')}")
+            continue
+        kept[pid] = item
+    return kept
+
+
 def diff_and_notify(site_label, previous, current):
     """Compare les dicts previous/current, notifie les nouveaux, retourne
     l'etat fusionne (jamais un simple remplacement, voir explication ci-dessous).
@@ -335,7 +415,7 @@ def main():
 
     for key, label, fetch_fn in SITES:
         try:
-            current = fetch_fn()
+            current = keep_french_only(label, fetch_fn())
         except Exception as e:
             print(f"Erreur recuperation {label}: {e}", file=sys.stderr)
             continue
