@@ -145,23 +145,19 @@ def fetch_pikaboutique():
     base_url = "https://pika-boutique.fr"
     collections = ["etb", "displays", "box-coffrets", "boosters"]
     products = {}
-    ignored = 0
 
     for handle in collections:
         for p in fetch_shopify_raw(base_url, handle):
             title = p.get("title", "(titre indisponible)")
             if any(marker in title.lower() for marker in JAPANESE_MARKERS):
-                ignored += 1
                 continue
             if not is_pokemon_product(p):
-                ignored += 1
                 continue
             products[str(p["id"])] = {
                 "title": title,
                 "url": f"{base_url}/products/{p.get('handle', '')}",
             }
 
-    print(f"[Pika-Boutique] {ignored} produit(s) ecarte(s) (non-Pokemon ou japonais).")
     return products
 
 
