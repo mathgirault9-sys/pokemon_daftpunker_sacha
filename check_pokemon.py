@@ -280,6 +280,30 @@ DESTOCKTCG_STATUS_LABELS = {
 }
 
 
+# DestockTCG : on ne garde que les produits scelles contenant des cartes.
+# Un titre doit citer un format de cartes (liste blanche) et ne doit pas
+# designer un accessoire (liste noire, prioritaire : "Protection pour Coffret
+# Dresseur d'Elite" cite "coffret" mais n'a pas de cartes).
+CARD_PRODUCT_PATTERN = re.compile(
+    r"\b(booster|boosters|display|coffret|coffrets|etb|bundle|pokebox|tin|"
+    r"mini tin|deck|decks|artset|tripack|duopack|blister|blisterbooster|"
+    r"collection|valisette|pack)\b"
+)
+ACCESSORY_PATTERN = re.compile(
+    r"\b(protection|protections|protege|sleeve|sleeves|pochette|pochettes|"
+    r"toploader|binder|portfolio|tapis|playmat|deck ?box|etui|rangement|"
+    r"acrylique|plexi|boitier|presentoir|support|des a jouer|compteur|"
+    r"peluche|carte cadeau)\b"
+)
+
+
+def is_card_product(title):
+    text = _normalize(title)
+    if ACCESSORY_PATTERN.search(text):
+        return False
+    return bool(CARD_PRODUCT_PATTERN.search(text))
+
+
 def fetch_destocktcg():
     """DestockTCG (site maison, HTML genere cote serveur). Chaque vignette
     produit porte un drapeau de langue ('Langue : fr') et eventuellement une
@@ -320,6 +344,10 @@ def fetch_destocktcg():
             if flag and not _normalize(flag.get("alt", "")).endswith(": fr"):
                 continue
 
+            title = a.get("title") or a.get_text(strip=True) or "(titre indisponible)"
+            if not is_card_product(title):
+                continue
+
             label = card.select_one(".product-item-label")
             label_classes = label.get("class", []) if label else []
             if "preorder" in label_classes:
@@ -331,7 +359,7 @@ def fetch_destocktcg():
 
             found_on_this_page += 1
             products[product_id] = {
-                "title": a.get("title") or a.get_text(strip=True) or "(titre indisponible)",
+                "title": title,
                 "url": link,
                 "status": status,
             }
