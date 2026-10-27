@@ -226,11 +226,19 @@ def fetch_strikegames():
 
 
 def fetch_investcollect():
-    return fetch_prestashop_id_pattern(
+    """La categorie 'produits scelles' d'InvestCollect melange Pokemon, Topps,
+    Warhammer... : on ne garde que les produits dont le titre ou l'URL cite
+    Pokemon (le titre affiche est parfois un libelle generique comme 'Creer
+    une alerte', l'URL est alors la seule source fiable)."""
+    products = fetch_prestashop_id_pattern(
         category_url="https://investcollect.com/eshop/produits-scelles.html",
         id_pattern=r"/eshop/p/([a-z0-9\-_.]+)\.html",
         base_url="https://investcollect.com",
     )
+    return {
+        pid: item for pid, item in products.items()
+        if "pokemon" in _normalize(f"{item['title']} {item['url']}")
+    }
 
 
 def fetch_auxtroiskoalas():
