@@ -378,6 +378,26 @@ def fetch_destocktcg():
     return products
 
 
+def fetch_undeuxtroisjeux():
+    """Un Deux Trois Jeux (Shopify). La collection 'univers Pokemon' melange
+    du scelle, des accessoires (classeurs, protege-cartes...), des jouets
+    (4D Build) et parfois d'autres jeux (Digimon) : on ne garde que les
+    produits Pokemon contenant des cartes (meme filtre que DestockTCG, plus
+    les accessoires vendus avec des boosters, ex: 'Portfolio + 5 Boosters')."""
+    base_url = "https://www.undeuxtroisjeux.fr"
+    products = {}
+    for p in fetch_shopify_raw(base_url, "01-a-univers-pokemon"):
+        title = p.get("title", "(titre indisponible)")
+        has_cards = is_card_product(title) or "booster" in _normalize(title)
+        if not is_pokemon_product(p) or not has_cards:
+            continue
+        products[str(p["id"])] = {
+            "title": title,
+            "url": f"{base_url}/products/{p.get('handle', '')}",
+        }
+    return products
+
+
 def diff_status_and_notify(site_label, previous, current):
     """Comme diff_and_notify, mais previent aussi quand un produit deja vu
     devient commandable : passage a 'disponible' (depuis precommande ou
@@ -421,6 +441,7 @@ SITES = [
     )),
     ("pikaboutique", "Pika-Boutique", fetch_pikaboutique),
     ("destocktcg", "DestockTCG", fetch_destocktcg),
+    ("undeuxtroisjeux", "Un Deux Trois Jeux", fetch_undeuxtroisjeux),
 ]
 
 # Sites dont on suit aussi l'etat (precommande / reassort / disponible)
