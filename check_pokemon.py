@@ -221,8 +221,64 @@ def fetch_philibert():
     )
 
 
+# Strike Games vend aussi des cartes a l'unite (souvent gradees) dans sa
+# collection "produits en francais", ex: 'Evoli CHR (S8B - 210/184) - PSA 10'
+# ou 'Dracaufeu (LO - TG03/TG30) - CollectAura 9'. Une carte a l'unite se
+# reconnait a son numero de carte (210/184, TG03/TG30, SVP 173...) ou a une
+# societe de gradation (PSA, CollectAura, PCA...).
+SINGLE_CARD_PATTERN = re.compile(
+    r"\b[a-z]{0,3}\d{1,3} ?/ ?[a-z]{0,3}\d{1,3}\b"
+    r"|\b(svp|swsh|smp|xyp|bwp) ?\d{1,3}\b"
+    r"|\b(psa|pca|bgs|cgc|sgc|ags|beckett|collectaura|collect aura|"
+    r"gradee|gradees|graded|carte a l'unite|single)\b"
+)
+# Scelle Pokemon : en plus des formats de DestockTCG, Strike Games vend des
+# valises, calendriers de l'avent, build box...
+STRIKEGAMES_SEALED_PATTERN = re.compile(
+    r"\b(valise|valisse|calendrier|avent|build box|kit|classeur|portfolio)\b"
+)
+# Titres de produits anglais ou japonais (Strike Games ne met pas toujours
+# la langue), ex: 'Coffret Special Pokemon Center Hiroshima'.
+STRIKEGAMES_ENGLISH_PATTERN = re.compile(
+    r"\b(scarlet|sword ?& ?shield|elite trainer box|booster box|build box|"
+    r"build ?& ?battle|booster bundle|glory of team rocket|"
+    r"pokemon center (hiroshima|tohoku|tokyo|osaka|kyoto|nagoya|fukuoka|"
+    r"sapporo|yokohama|kanazawa|skytree|sky tree|mega tokyo))\b"
+)
+
+
+def is_strikegames_sealed(p):
+    """Garde uniquement le scelle Pokemon francais de Strike Games : ecarte
+    toute carte a l'unite (titre ou type/tags), tout titre anglais, tout
+    produit d'un autre jeu, et exige un format de produit scelle."""
+    title = _normalize(p.get("title", ""))
+    tags = p.get("tags", [])
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    meta = _normalize(" ".join([p.get("product_type", "")] + list(tags)))
+    if SINGLE_CARD_PATTERN.search(title) or re.search(r"\b(gradee?s?|graded|psa)\b", meta):
+        return False
+    if STRIKEGAMES_ENGLISH_PATTERN.search(title):
+        return False
+    if not is_pokemon_product(p):
+        return False
+    if ACCESSORY_PATTERN.search(title) and "booster" not in title:
+        return False
+    return bool(CARD_PRODUCT_PATTERN.search(title) or STRIKEGAMES_SEALED_PATTERN.search(title)
+                or "booster" in title)
+
+
 def fetch_strikegames():
-    return fetch_shopify("https://strikegames.shop", "tcg-pokemon-produit-en-francais")
+    base_url = "https://strikegames.shop"
+    products = {}
+    for p in fetch_shopify_raw(base_url, "tcg-pokemon-produit-en-francais"):
+        if not is_strikegames_sealed(p):
+            continue
+        products[str(p["id"])] = {
+            "title": p.get("title", "(titre indisponible)"),
+            "url": f"{base_url}/products/{p.get('handle', '')}",
+        }
+    return products
 
 
 def fetch_investcollect():
